@@ -1,0 +1,99 @@
+﻿-- Success rate of each transaction type
+
+with total_trans as 
+(SELECT transaction_type
+    , Count(transaction_id) as total_trans
+    , Count(Case when fact20.status_id = 1 then transaction_id end) as suc_trans
+FROM fact_transaction_2020 fact20
+JOIN dim_scenario sce ON fact20.scenario_id = sce.scenario_id
+JOIN dim_status sta ON fact20.status_id = sta.status_id
+WHERE month(transaction_time) = 1
+Group by transaction_type
+)
+select transaction_type, suc_trans, total_trans
+    , format(1.0*suc_trans/total_trans, 'p') as pct_suc_trans_type
+from total_trans
+
+
+-- Evaluate the success rate of Top-up (one of transaction types) by breaking into each payment platform and by month
+
+with trans_platfrom_month as (
+SELECT month (transaction_time) as month
+    , payment_platform
+    , Count(transaction_id) as total_trans
+    , Count(Case when fact20.status_id = 1 then transaction_id end) as suc_trans
+FROM fact_transaction_2020 fact20
+JOIN dim_scenario sce ON fact20.scenario_id = sce.scenario_id
+JOIN dim_status sta ON fact20.status_id = sta.status_id
+JOIN dim_payment_channel chan ON fact20.payment_channel_id = chan.payment_channel_id
+JOIN dim_platform plat ON fact20.platform_id = plat.platform_id
+WHERE transaction_type = 'Top-up account' and (payment_platform = 'ios' or payment_platform = 'android' )
+group by month (transaction_time), payment_platform
+)
+select month, payment_platform, suc_trans, total_trans
+    , format(1.0*suc_trans/total_trans, 'p') as pct_suc_by_platform
+from trans_platfrom
+
+
+-- Evaluate the success rate of Top-up (one of transaction types) by breaking into each payment platform and by day (of April to June)
+
+with trans_platfrom_day as (
+SELECT Datepart(day, transaction_time) as day
+    , month (transaction_time) as month
+    , payment_platform
+    , Count(transaction_id) as total_trans
+    , Count(Case when fact20.status_id = 1 then transaction_id end) as suc_trans
+FROM fact_transaction_2020 fact20
+JOIN dim_scenario sce ON fact20.scenario_id = sce.scenario_id
+JOIN dim_status sta ON fact20.status_id = sta.status_id
+JOIN dim_payment_channel chan ON fact20.payment_channel_id = chan.payment_channel_id
+JOIN dim_platform plat ON fact20.platform_id = plat.platform_id
+WHERE transaction_type = 'Top-up account' and (payment_platform = 'ios' or payment_platform = 'android' ) and month (transaction_time) between 4 and 6
+group by Datepart(day, transaction_time), month (transaction_time), payment_platform
+)
+select day, month, payment_platform, suc_trans, total_trans
+    , format(1.0*suc_trans/total_trans, 'p') as pct_suc_platform_by_week
+from trans_platfrom_day
+order by payment_platform, month, day
+
+-- Moving average for the 3 days in each observation day
+
+with trans_platfrom_day as (
+SELECT Datepart(day, transaction_time) as day
+    , month (transaction_time) as month
+    , payment_platform
+    , Count(transaction_id) as total_trans
+    , Count(Case when fact20.status_id = 1 then transaction_id end) as suc_trans
+FROM fact_transaction_2020 fact20
+JOIN dim_scenario sce ON fact20.scenario_id = sce.scenario_id
+JOIN dim_status sta ON fact20.status_id = sta.status_id
+JOIN dim_payment_channel chan ON fact20.payment_channel_id = chan.payment_channel_id
+JOIN dim_platform plat ON fact20.platform_id = plat.platform_id
+WHERE transaction_type = 'Top-up account' and (payment_platform = 'ios' or payment_platform = 'android' ) and month (transaction_time) between 4 and 6
+group by Datepart(day, transaction_time), month (transaction_time), payment_platform
+)
+, pct_trans_platform as (
+select day, month, payment_platform, suc_trans, total_trans
+    , 1.0*suc_trans/total_trans as pct_suc_platform_by_day
+from trans_platfrom_day
+)
+select day, month, payment_platform
+    , format(AVG(pct_suc_platform_by_day) over (order by month asc, day asc, payment_platform asc ROWS BETWEEN 2 PRECEDING AND UNBOUNDED FOLLOWING), 'p') AS moving_avg_3day
+from pct_trans_platform
+order by payment_platform, month, day
+
+
+--Find Top Critical errors lead to failed transactions
+
+SELECT month (transaction_time) as month
+    , status_description
+    , Count(transaction_id) as total_trans
+    , Count(Case when fact20.status_id <> 1 then transaction_id end) as failed_trans
+FROM fact_transaction_2020 fact20
+JOIN dim_scenario sce ON fact20.scenario_id = sce.scenario_id
+JOIN dim_status sta ON fact20.status_id = sta.status_id
+JOIN dim_payment_channel chan ON fact20.payment_channel_id = chan.payment_channel_id
+JOIN dim_platform plat ON fact20.platform_id = plat.platform_id
+WHERE transaction_type = 'Top-up account' and month (transaction_time) between 4 and 6 and status_description <> 'success'
+group by month (transaction_time), status_description
+order by failed_trans desc
